@@ -13,7 +13,7 @@ class WebClassClient {
    */
   login(userid, password) {
     log('--- WebClassログイン処理開始 ---');
-    this.cookies = {}; 
+    this.cookies = {};
 
     // 1. SSO認証
     const ssoRes = this._fetch(SSO_URL, { method: 'post' });
@@ -32,10 +32,10 @@ class WebClassClient {
       contentType: 'application/json',
       payload: JSON.stringify(authPayload)
     });
-    
+
     const authResponse = JSON.parse(loginRes.getContentText());
     if (!authResponse.tokenId && !authResponse.successUrl) {
-      throw new Error('SSO認証失敗: ' + (authResponse.message || '不明なエラー'));
+      throw new Error('SSO認証失敗: ' + (authResponse.message || '不明なエラー。パスワードをご確認ください。'));
     }
 
     if (authResponse.tokenId) {
@@ -50,7 +50,7 @@ class WebClassClient {
 
     const finalResult = this._followManualRedirects(initialLoginUrl, ssoBaseUri, webClassBaseUri);
     log(`✅ WebClassセッション確立成功！最終URL: ${finalResult.finalUrl}`);
-    
+
     return finalResult.finalUrl;
   }
 
@@ -89,7 +89,7 @@ class WebClassClient {
   _fetch(url, options = {}) {
     const cleanUrl = this._decodeHtmlEntities(url);
     const headers = this._buildHeaders(cleanUrl);
-    
+
     const defaults = {
       'headers': headers,
       'muteHttpExceptions': true,
@@ -123,7 +123,7 @@ class WebClassClient {
   _updateCookies(res) {
     const headers = res.getAllHeaders();
     if (!headers['Set-Cookie']) return;
-    
+
     const cookies = Array.isArray(headers['Set-Cookie']) ? headers['Set-Cookie'] : [headers['Set-Cookie']];
     cookies.forEach(c => {
       const parts = c.split(';');
@@ -172,10 +172,10 @@ class WebClassClient {
         const relayState = this._cleanRelayState((body.match(REGEX.RELAY_STATE) || [])[1] || '');
         const actionMatch = body.match(REGEX.FORM_ACTION);
         let acsUrl = actionMatch ? actionMatch[1] : ACS_URL;
-        
+
         samlAcsUrl = this._correctUrl(this._decodeHtmlEntities(acsUrl), webclassBaseUri);
         samlPostData = `SAMLResponse=${encodeURIComponent(samlResponse)}&RelayState=${encodeURIComponent(relayState)}`;
-        currentUrl = res.getHeaders()['Location'] || currentUrl; // ロケーションがなければ現在地維持で次へ
+        currentUrl = res.getHeaders()['Location'] || currentUrl;
         continue;
       }
 
@@ -187,12 +187,12 @@ class WebClassClient {
         currentUrl = this._correctUrl(nextLoc, base);
         continue;
       }
-      
+
       // JavaScriptリダイレクト
       const jsMatch = body.match(REGEX.REDIRECT);
       if (jsMatch) {
         let path = jsMatch[1];
-        if(!path.startsWith('http')) path = this._correctUrl(path, webclassBaseUri);
+        if (!path.startsWith('http')) path = this._correctUrl(path, webclassBaseUri);
         currentUrl = path;
         continue;
       }
@@ -227,10 +227,10 @@ class WebClassClient {
   _cleanBase64(str) {
     if (!str) return '';
     let c = str.replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
-               .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(parseInt(d, 10)))
-               .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-               .replace(/[\x00-\x1F\x7F-\x9F\s]/g, '')
-               .replace(/[^A-Za-z0-9+/=]/g, '');
+      .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(parseInt(d, 10)))
+      .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/[\x00-\x1F\x7F-\x9F\s]/g, '')
+      .replace(/[^A-Za-z0-9+/=]/g, '');
     const pad = (4 - (c.replace(/=/g, '').length % 4)) % 4;
     return c.replace(/=/g, '') + '='.repeat(pad);
   }
@@ -238,8 +238,8 @@ class WebClassClient {
   _cleanRelayState(str) {
     if (!str) return '';
     return str.replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
-              .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(parseInt(d, 10)))
-              .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-              .replace(/[\r\n]/g, '').trim();
+      .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(parseInt(d, 10)))
+      .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/[\r\n]/g, '').trim();
   }
 }

@@ -47,6 +47,7 @@
                     saveButton.disabled = false;
                     saveButton.innerHTML = '資格情報を登録';
                 })
+                // Utils.gs の setCredentials を呼び出し
                 .setCredentials(form.userid.value, form.password.value);
             return false;
         }

@@ -1,11 +1,9 @@
 /**
  * AppLogic.gs
- * WebClass, Classroom, Tasksの各処理ロジック
+ * WebClass, Classroom, Tasksの各処理ロジック (旧 Coge.gs)
  */
 
-/**
- * 1. WebClassの課題を取得してシートに書き込む
- */
+// --- 1. WebClass取得 ---
 function processWebClass() {
   log('--- WebClass処理開始 ---');
   const creds = Props.getCredentials();
@@ -13,54 +11,38 @@ function processWebClass() {
 
   const client = new WebClassClient();
   const dashboardUrl = client.login(creds.userid, creds.password);
-  
-  // ダッシュボード取得
+
   const dashboardHtml = client.fetchWithSession(dashboardUrl);
   const courses = WebClassParser.parseDashboard(dashboardHtml);
-  log(`取得したコース数: ${courses.length}`);
 
   const allRows = [];
   courses.forEach((course, i) => {
-    // 科目名整形
     let courseName = course.name.replace(/^\s*\d+\s*/, '').replace(/\s*\(.*\)\s*$/, '').trim();
-    log(`[${i+1}/${courses.length}] ${courseName} をスキャン中...`);
 
     try {
       const html = client.fetchWithSession(course.url);
       const assignments = WebClassParser.parseCourseContents(html);
-      
+
       assignments.forEach(a => {
         allRows.push([
-          'WebClass',
-          courseName,
-          a.title,
-          a.start,
-          a.end,
-          a.shareLink,
-          '', '' // Tasks用プレースホルダ
+          'WebClass', courseName, a.title, a.start, a.end, a.shareLink, '', ''
         ]);
       });
     } catch (e) {
       log(`🚨 ${courseName} の取得失敗: ${e.message}`);
     }
-    Utilities.sleep(500); // サーバー負荷軽減
+    Utilities.sleep(500);
   });
 
   SheetUtils.writeToSheet(SHEET_NAME_WEBCLASS, allRows);
   log('--- WebClass処理完了 ---');
 }
 
-/**
- * 2. Classroomの課題を取得してシートに書き込む
- */
+// --- 2. Classroom取得 ---
 function processClassroom() {
   log('--- Classroom処理開始 ---');
   try {
     const courses = Classroom.Courses.list({ courseStates: ['ACTIVE'] }).courses;
-    if (!courses || courses.length === 0) {
-      log('アクティブなコースがありません。');
-      return;
-    }
 
     const allRows = [];
     courses.forEach(course => {
@@ -69,22 +51,13 @@ function processClassroom() {
 
       works.forEach(work => {
         if (!work.dueDate) return;
-        
-        // 日付整形
+
         const d = work.dueDate;
         const t = work.dueTime || { hours: 0, minutes: 0 };
         const dateObj = new Date(d.year, d.month - 1, d.day, t.hours || 0, t.minutes || 0);
         const dueStr = Utilities.formatDate(dateObj, Session.getScriptTimeZone(), 'yyyy/MM/dd HH:mm');
 
-        allRows.push([
-          'Classroom',
-          course.name,
-          work.title,
-          '', // 開始日なし
-          dueStr,
-          work.alternateLink,
-          '', ''
-        ]);
+        allRows.push(['Classroom', course.name, work.title, '', dueStr, work.alternateLink, '', '']);
       });
     });
 
@@ -95,16 +68,14 @@ function processClassroom() {
   log('--- Classroom処理完了 ---');
 }
 
-/**
- * 3. Tasks同期と登録（メイン処理）
- */
+// --- 3. Tasks同期・登録 ---
 function processTasksSync() {
-  const taskListId = Props.getTaskListId();
+  const taskListId = getTaskListIdProperty();
   if (!taskListId) {
-    log('TasksリストIDが設定されていません。同期をスキップします。');
+    log('TasksリストIDが未設定です。同期をスキップします。');
     return;
   }
-  
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheets = [SHEET_NAME_WEBCLASS, SHEET_NAME_CLASSROOM];
 
@@ -112,17 +83,14 @@ function processTasksSync() {
     const sheet = ss.getSheetByName(name);
     if (!sheet || sheet.getLastRow() <= 1) return;
 
-    // 範囲取得: ヘッダー除くデータ部分
     const range = sheet.getRange(2, 1, sheet.getLastRow() - 1, HEADER.length);
     const data = range.getValues();
     let isUpdated = false;
 
     data.forEach((row, i) => {
-      // Row Map: [Source, Course, Title, Start, Due, Link, TaskID, Flag]
-      // Index:   0       1       2      3      4    5     6       7
       const [src, course, title, start, due, link, taskId, flag] = row;
 
-      // A. 完了同期: Tasks側で完了していたらシートもCOMPLETEDに
+      // A. 完了同期 
       if (taskId && flag !== 'COMPLETED' && flag !== 'DELETED') {
         try {
           const t = Tasks.Tasks.get(taskListId, taskId);
@@ -132,19 +100,24 @@ function processTasksSync() {
           }
         } catch (e) {
           if (e.message.includes('NotFound')) {
-            data[i][7] = 'DELETED';
+            data[i][7] = 'DELETED'; // Tasks側で削除された
             isUpdated = true;
           }
         }
       }
 
-      // B. 新規登録: IDがなく、有効期限内ならTasksへ登録
+      // B. 新規登録 [改善案 5, 6 の実装]
       if (!taskId && !['COMPLETED', 'DELETED', 'EXPIRED'].includes(flag)) {
-        // 日付パース
+
         let dueDateObj = null;
-        if (due instanceof Date) dueDateObj = due;
-        else if (typeof due === 'string' && due.trim()) {
-          dueDateObj = new Date(due.replace(/\//g, '-'));
+        const rawDue = String(due).trim();
+
+        if (rawDue) {
+          try {
+            // 様々な日付形式に対応してパースを試みる
+            dueDateObj = new Date(rawDue.replace(/(\d{4})[\/年](\d{1,2})[\/月](\d{1,2})[\日]?/g, '$1/$2/$3'));
+            if (isNaN(dueDateObj.getTime())) dueDateObj = null;
+          } catch (e) { dueDateObj = null; }
         }
 
         // 期限切れチェック
@@ -154,16 +127,31 @@ function processTasksSync() {
           return;
         }
 
-        // Tasks登録
         try {
-          const newTask = {
-            title: `[${course}] ${title}`,
-            notes: `リンク:\n${link}\n\n期限: ${due}\nソース: ${src}`,
-          };
+          const newTask = {};
+          let dueDisplay = '期限なし';
+
           if (dueDateObj) {
-            // Tasks APIのdueはRFC3339 timestamp (日付のみ使用する場合が多い)
-            newTask.due = new Date(Date.UTC(dueDateObj.getFullYear(), dueDateObj.getMonth(), dueDateObj.getDate())).toISOString();
+            // --- [改善案 5] Tasksタイトル形式の最適化 ---
+            const timeUntilDue = (dueDateObj.getTime() - new Date().getTime()) / (1000 * 3600 * 24);
+            const isUrgent = timeUntilDue <= 3 && timeUntilDue >= 0;
+
+            dueDisplay = Utilities.formatDate(dueDateObj, Session.getScriptTimeZone(), 'MM/dd(E) HH:mm');
+            newTask.title = `${isUrgent ? '🔥 ' : ''}[${course}] ${title} (${dueDisplay}まで)`;
+
+            // --- [改善案 6] 期限設定精度の向上 (時刻がない場合は23:59に設定) ---
+            let taskDueDate = new Date(dueDateObj.getTime());
+            // 時刻情報が含まれていないかチェック
+            if (!rawDue.match(/(\d{1,2}:\d{2})/) && !rawDue.match(/(\d{1,2}時\d{2}分)/)) {
+              taskDueDate.setHours(23, 59, 0, 0); // 23:59:00に設定
+            }
+            newTask.due = taskDueDate.toISOString(); // Tasks APIはRFC3339形式（UTC）を要求
+
+          } else {
+            newTask.title = `[${course}] ${title}`;
           }
+
+          newTask.notes = `リンク:\n${link}\n\n期限: ${dueDisplay}\nソース: ${src}`;
 
           const created = Tasks.Tasks.insert(newTask, taskListId);
           data[i][6] = created.id;
@@ -171,7 +159,7 @@ function processTasksSync() {
           isUpdated = true;
           log(`Tasks登録: ${newTask.title}`);
         } catch (e) {
-          log(`Tasks登録失敗: ${title} - ${e.message}`);
+          log(`🚨 Tasks登録失敗: ${title} - ${e.message}`);
         }
       }
     });
@@ -180,34 +168,60 @@ function processTasksSync() {
       range.setValues(data);
     }
   });
-  
-  // クリーンアップ（古い行の削除）
+
   _cleanupOldRows(ss, sheets);
 }
 
 /**
- * 古い行を削除する内部関数
+ * 課題の削除ロジック [改善案 9. 削除閾値の適用]
  */
 function _cleanupOldRows(ss, targetSheetNames) {
   const today = new Date().getTime();
-  
+
+  let cleanupDays = 30;
+  try {
+    cleanupDays = getSetting('CLEANUP_DAYS'); // AppConfig.gs から読み込み
+  } catch (e) {
+    log(`⚠️ 設定シートからCLEANUP_DAYSを取得できませんでした。デフォルトの${cleanupDays}日を使用します。`);
+  }
+  const deleteThresholdMs = cleanupDays * 24 * 60 * 60 * 1000;
+
   targetSheetNames.forEach(name => {
     const sheet = ss.getSheetByName(name);
     if (!sheet || sheet.getLastRow() <= 1) return;
-    
-    const rows = sheet.getDataRange().getValues(); // 全データ
+
+    const rows = sheet.getDataRange().getValues();
+
     // 後ろからループして削除
     for (let i = rows.length - 1; i >= 1; i--) {
       const [src, course, title, start, due, link, taskId, flag] = rows[i];
-      
+
       let shouldDelete = false;
-      // 1. 完了・削除・期限切れ済み
-      if (['COMPLETED', 'DELETED', 'EXPIRED'].includes(flag)) shouldDelete = true;
-      
-      // 2. 未連携だが期限から7日以上経過
-      if (!taskId && due) {
-        const d = new Date(due.replace(/\//g, '-'));
-        if ((today - d.getTime()) > 7 * 24 * 60 * 60 * 1000) shouldDelete = true;
+      const rawDue = String(due).trim();
+
+      let dueDateObj = null;
+      if (rawDue) {
+        try {
+          dueDateObj = new Date(rawDue.replace(/(\d{4})[\/年](\d{1,2})[\/月](\d{1,2})[\日]?/g, '$1/$2/$3'));
+          if (isNaN(dueDateObj.getTime())) dueDateObj = null;
+        } catch (e) { dueDateObj = null; }
+      }
+
+      // 1. 完了・削除・期限切れ済みの場合
+      if (['COMPLETED', 'DELETED', 'EXPIRED'].includes(flag)) {
+        // 期限があり、かつ期限切れから閾値日数以上経過
+        if (dueDateObj && (today - dueDateObj.getTime()) > deleteThresholdMs) {
+          shouldDelete = true;
+        }
+        // 期限はないがTasksから削除されたものは即座に削除（ゴミデータ回避）
+        else if (flag === 'DELETED' && !dueDateObj) {
+          shouldDelete = true;
+        }
+      }
+
+      // 2. 未連携で、期限からCLEANUP_DAYS以上経過（古いゴミデータ）
+      if (!taskId && dueDateObj && (today - dueDateObj.getTime()) > deleteThresholdMs) {
+        shouldDelete = true;
       }
 
       if (shouldDelete) {
@@ -215,4 +229,23 @@ function _cleanupOldRows(ss, targetSheetNames) {
       }
     }
   });
+}
+
+// TasksリストIDの検索・作成ヘルパー
+function getTaskListId(taskListName) {
+  const lists = Tasks.Tasklists.list().items;
+  let targetId = null;
+
+  for (const list of lists) {
+    if (list.title === taskListName) {
+      targetId = list.id;
+      break;
+    }
+  }
+
+  if (!targetId) {
+    const newList = Tasks.Tasklists.insert({ title: taskListName });
+    targetId = newList.id;
+  }
+  return targetId;
 }

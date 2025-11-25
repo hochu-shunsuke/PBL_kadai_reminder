@@ -1,20 +1,24 @@
 /**
  * Main.gs
- * エントリーポイント
+ * エントリーポイントとメニュー機能
  */
 
 function onOpen() {
+  // 起動時に設定シートを初期化（存在しない場合のみ）
+  initializeSettingsSheet();
+
   SpreadsheetApp.getUi()
     .createMenu('✨ 課題自動取得システム')
     .addItem('1. 認証情報を設定', 'showCredentialDialog')
     .addItem('2. Tasks連携設定', 'setupTasksList')
+    .addItem('3. **定期実行トリガーの自動設定**', 'setupDailyTrigger') // [改善案 4. 自動設定]
     .addSeparator()
-    .addItem('3. 今すぐ実行（テスト）', 'dailySystemRun')
+    .addItem('4. 今すぐ実行（テスト）', 'dailySystemRun')
     .addToUi();
 }
 
 /**
- * 認証ダイアログ表示
+ * 認証ダイアログ表示 (Setting.html を呼び出す)
  */
 function showCredentialDialog() {
   const html = HtmlService.createHtmlOutputFromFile('Setting')
@@ -28,25 +32,44 @@ function showCredentialDialog() {
 function setupTasksList() {
   const ui = SpreadsheetApp.getUi();
   try {
-    const lists = Tasks.Tasklists.list().items;
-    let targetId = null;
+    const taskListName = getSetting('TASKS_LIST_NAME'); // AppConfig.gs から読み込み
+    const taskListId = getTaskListId(taskListName); // AppLogic.gs のヘルパー関数
 
-    for (const list of lists) {
-      if (list.title === TASK_LIST_NAME) {
-        targetId = list.id;
-        break;
+    Props.setTaskListId(taskListId);
+    ui.alert(`✅ 設定完了\nリスト「${taskListName}」と連携しました。`);
+  } catch (e) {
+    ui.alert(`🚨 エラー: ${e.message}\nTasks APIが有効か、または設定シートのTASKS_LIST_NAMEを確認してください。`);
+  }
+}
+
+/**
+ * 4. 定期実行トリガーを自動設定する関数
+ */
+function setupDailyTrigger() {
+  const ui = SpreadsheetApp.getUi();
+  const functionToRun = 'dailySystemRun';
+
+  try {
+    const triggerHour = getSetting('TRIGGER_HOUR'); // AppConfig.gs から読み込み
+
+    // 既存のトリガーを全て削除（重複防止）
+    const triggers = ScriptApp.getProjectTriggers();
+    for (let i = 0; i < triggers.length; i++) {
+      if (triggers[i].getHandlerFunction() === functionToRun) {
+        ScriptApp.deleteTrigger(triggers[i]);
       }
     }
 
-    if (!targetId) {
-      const newList = Tasks.Tasklists.insert({ title: TASK_LIST_NAME });
-      targetId = newList.id;
-    }
+    // 新しい日次トリガーを設定
+    ScriptApp.newTrigger(functionToRun)
+      .timeBased()
+      .everyDays(1)
+      .atHour(triggerHour) // 設定シートの値を使用
+      .create();
 
-    Props.setTaskListId(targetId);
-    ui.alert(`✅ 設定完了\nリスト「${TASK_LIST_NAME}」と連携しました。`);
+    ui.alert(`✅ 定期実行トリガーを設定しました。\n毎日午前${triggerHour}時〜${triggerHour + 1}時の間に自動実行されます。`);
   } catch (e) {
-    ui.alert(`エラー: ${e.message}\nTasks APIが有効か確認してください。`);
+    ui.alert(`🚨 エラー: トリガー設定に失敗しました。\n設定シートの「TRIGGER_HOUR」が正しく設定されているか確認してください。\nエラー詳細: ${e.message}`);
   }
 }
 
@@ -54,19 +77,13 @@ function setupTasksList() {
  * 日次実行メイン関数
  */
 function dailySystemRun() {
-  log('---システム実行開始---');
+  log('=== システム実行開始 ===');
   try {
-    // 1. WebClass取得
     processWebClass();
-
-    // 2. Classroom取得
     processClassroom();
-
-    // 3. Tasks同期・登録・掃除
     processTasksSync();
-
-    log('---システム実行完了---');
+    log('=== システム実行完了 ===');
   } catch (e) {
-    log(`🚨 致命的エラー中断: ${e.toString()}`);
+    log(`🚨 致命的エラー中断: ${e.toString()}\n認証情報やTasks連携設定を確認してください。`);
   }
 }

@@ -1,6 +1,6 @@
 /**
  * Config.gs
- * システム全体の設定定数
+ * システム全体で使用する共通定数。
  */
 
 // --- WebClass関連 URL ---
@@ -15,9 +15,8 @@ const SHEET_NAME_LOG = 'ログ';
 // ヘッダー定義
 const HEADER = ['ソース', '授業名', '課題タイトル', '開始日時', '終了日時', '課題リンク (URL)', 'Tasks ID', '登録済みフラグ'];
 
-// --- システム設定 ---
-const TASK_LIST_NAME = '大学課題'; // Tasksに作成されるリスト名
-const MAX_REDIRECTS = 15; // リダイレクト追跡最大数
+// --- システム定数 ---
+const MAX_REDIRECTS = 15;
 
 // --- 正規表現 ---
 const REGEX = {
@@ -31,8 +30,7 @@ const REGEX = {
 
 // --- User-Agent リスト ---
 const USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1'
-    // 必要に応じてリストを追加してください
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1'
 ];

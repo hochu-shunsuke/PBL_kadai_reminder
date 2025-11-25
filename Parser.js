@@ -41,13 +41,14 @@ const WebClassParser = {
       // タイトル抽出
       const titleMatch = item.match(/<h4\s+[^>]*?class=\"cm-contentsList_contentName\"[^>]*?>([\s\S]*?)<\/h4>/);
       if (!titleMatch) return;
-      
+
       let content = titleMatch[1].replace(/<div class=\"cl-contentsList_new\">[\s\S]*?<\/div>/g, '').trim();
       const title = content.replace(/<[^>]+>/g, '').trim();
 
       // リンク抽出
       const urlMatch = content.match(/<a href=\"([^\"]+)\">/);
       let shareLink = "";
+      let rawEnd = "";
       if (urlMatch) {
         const idMatch = urlMatch[1].match(REGEX.ID);
         if (idMatch) {
@@ -56,21 +57,21 @@ const WebClassParser = {
       }
 
       // 期間抽出
-      let start = "", end = "";
+      let start = "";
       const periodMatch = item.match(/利用可能期間<\/div>\s*<div\s+[^>]*?class=['"]cm-contentsList_contentDetailListItemData['"][^>]*?>\s*([\s\S]*?)\s*<\/div>/);
       if (periodMatch) {
         const rawPeriod = periodMatch[1].replace(/<[^>]+>/g, '').trim();
         const parts = rawPeriod.split(' - ');
         if (parts.length === 2) {
           start = parts[0].trim();
-          end = parts[1].trim();
+          rawEnd = parts[1].trim();
         } else {
-          end = rawPeriod;
+          rawEnd = rawPeriod; // 終了日のみの場合
         }
       }
 
       if (title && shareLink) {
-        results.push({ title, shareLink, start, end });
+        results.push({ title, shareLink, start, end: rawEnd });
       }
     });
     return results;
