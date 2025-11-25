@@ -1,20 +1,21 @@
 <!DOCTYPE html>
 <html>
+
 <head>
     <base target="_top">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        body { margin: 15px; }
+        body {
+            margin: 15px;
+        }
     </style>
 </head>
-<body>
 
+<body>
     <div class="container-fluid">
         <h4>WebClass 認証情報登録</h4>
-        <p class="text-muted">学籍番号とパスワードを入力してください。情報はGoogleの安全な領域に保存されます。</p>
-        
+        <p class="text-muted">学籍番号とパスワードを入力してください。</p>
         <div id="alert-message" class="alert alert-danger d-none" role="alert"></div>
-
         <form onsubmit="return handleFormSubmit(this)">
             <div class="mb-3">
                 <label for="userid" class="form-label">学籍番号 (User ID)</label>
@@ -24,66 +25,32 @@
                 <label for="password" class="form-label">パスワード (Password)</label>
                 <input type="password" class="form-control" id="password" required>
             </div>
-            <button id="save-btn" type="submit" class="btn btn-primary w-100">
-                資格情報を登録
-            </button>
+            <button id="save-btn" type="submit" class="btn btn-primary w-100">資格情報を登録</button>
         </form>
     </div>
-
     <script>
-    // ボタン操作のためのUIエレメントを取得
-    const saveButton = document.getElementById('save-btn');
-    const alertMessage = document.getElementById('alert-message');
-
-    /**
-     * フォーム送信時の処理（GASサーバーへの通信を開始）
-     */
-    function handleFormSubmit(form) {
-        const userid = form.userid.value;
-        const password = form.password.value;
-
-        // UIを更新
-        saveButton.disabled = true;
-        saveButton.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 保存中...';
-        alertMessage.classList.add('d-none'); 
-
-        // GASサーバー側関数 'setCredentials' の呼び出し (Properties.gsに定義)
-        google.script.run
-            .withSuccessHandler(onSuccess)
-            .withFailureHandler(onFailure)
-            .setCredentials(userid, password);
-            
-        // フォームのデフォルト送信を防ぐ (これが重要)
-        return false; 
-    }
-
-    /**
-     * 登録成功時の処理
-     */
-    function onSuccess() {
-        alertMessage.classList.remove('alert-danger');
-        alertMessage.classList.add('alert-success');
-        alertMessage.textContent = '✅ 認証情報を正常に保存しました。';
-        alertMessage.classList.remove('d-none');
-        
-        // 成功したらダイアログを閉じる
-        setTimeout(function() {
-            google.script.host.close();
-        }, 1000); // 1秒後に閉じる
-    }
-    
-    /**
-     * 登録失敗時の処理 (エラーメッセージを表示)
-     */
-    function onFailure(error) {
-        alertMessage.classList.remove('alert-success');
-        alertMessage.classList.add('alert-danger');
-        alertMessage.textContent = '🚨 エラーが発生しました: ' + error.message;
-        alertMessage.classList.remove('d-none');
-        
-        saveButton.disabled = false;
-        saveButton.innerHTML = '資格情報を登録';
-    }
+        const saveButton = document.getElementById('save-btn');
+        const alertMessage = document.getElementById('alert-message');
+        function handleFormSubmit(form) {
+            saveButton.disabled = true;
+            saveButton.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 保存中...';
+            alertMessage.classList.add('d-none');
+            google.script.run
+                .withSuccessHandler(() => {
+                    alertMessage.className = 'alert alert-success';
+                    alertMessage.textContent = '✅ 保存しました。';
+                    setTimeout(() => google.script.host.close(), 1000);
+                })
+                .withFailureHandler((e) => {
+                    alertMessage.className = 'alert alert-danger';
+                    alertMessage.textContent = 'エラー: ' + e.message;
+                    saveButton.disabled = false;
+                    saveButton.innerHTML = '資格情報を登録';
+                })
+                .setCredentials(form.userid.value, form.password.value);
+            return false;
+        }
     </script>
 </body>
+
 </html>
