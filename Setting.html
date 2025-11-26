@@ -8,47 +8,59 @@
         body {
             margin: 15px;
         }
+
+        .alert-warning-custom {
+            background-color: #fff3cd;
+            border-color: #ffeeba;
+            color: #856404;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 0.9em;
+            margin-bottom: 15px;
+        }
     </style>
 </head>
 
 <body>
+
     <div class="container-fluid">
-        <h4>WebClass 認証情報登録</h4>
-        <p class="text-muted">学籍番号とパスワードを入力してください。</p>
-        <div id="alert-message" class="alert alert-danger d-none" role="alert"></div>
-        <form onsubmit="return handleFormSubmit(this)">
+        <h4>WebClass 認証設定</h4>
+        <p class="text-muted">学籍番号とパスワードを入力してください。情報はGoogleの安全な領域に保存されます。</p>
+
+        <div class="alert-warning-custom">
+            <strong>⚠️ 重要：</strong> 複数のGoogleアカウントでログインしている場合、設定が失敗する可能性があります。<br>
+            **大学アカウントのみでログインした**状態でこのダイアログを開くか、**シークレットモード**での実行を強く推奨します。
+        </div>
+
+        <div id="alert" class="alert d-none"></div>
+        <form onsubmit="return submitForm(this)">
             <div class="mb-3">
-                <label for="userid" class="form-label">学籍番号 (User ID)</label>
-                <input type="text" class="form-control" id="userid" required>
+                <label>学籍番号 (User ID)</label>
+                <input type="text" class="form-control" name="userid" required>
             </div>
             <div class="mb-3">
-                <label for="password" class="form-label">パスワード (Password)</label>
-                <input type="password" class="form-control" id="password" required>
+                <label>パスワード (Password)</label>
+                <input type="password" class="form-control" name="password" required>
             </div>
-            <button id="save-btn" type="submit" class="btn btn-primary w-100">資格情報を登録</button>
+            <button id="btn" type="submit" class="btn btn-primary w-100">保存</button>
         </form>
     </div>
     <script>
-        const saveButton = document.getElementById('save-btn');
-        const alertMessage = document.getElementById('alert-message');
-        function handleFormSubmit(form) {
-            saveButton.disabled = true;
-            saveButton.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 保存中...';
-            alertMessage.classList.add('d-none');
+        function submitForm(f) {
+            const b = document.getElementById('btn');
+            const a = document.getElementById('alert');
+            b.disabled = true; b.innerText = '保存中...'; a.classList.add('d-none');
+
             google.script.run
                 .withSuccessHandler(() => {
-                    alertMessage.className = 'alert alert-success';
-                    alertMessage.textContent = '✅ 保存しました。';
+                    a.className = 'alert alert-success'; a.innerText = '✅ 保存しました。'; a.classList.remove('d-none');
                     setTimeout(() => google.script.host.close(), 1000);
                 })
                 .withFailureHandler((e) => {
-                    alertMessage.className = 'alert alert-danger';
-                    alertMessage.textContent = 'エラー: ' + e.message;
-                    saveButton.disabled = false;
-                    saveButton.innerHTML = '資格情報を登録';
+                    a.className = 'alert alert-danger'; a.innerText = 'エラー: ' + e.message; a.classList.remove('d-none');
+                    b.disabled = false; b.innerText = '保存';
                 })
-                // Utils.gs の setCredentials を呼び出し
-                .setCredentials(form.userid.value, form.password.value);
+                .saveAuthDataFromHtml(f.userid.value, f.password.value);
             return false;
         }
     </script>

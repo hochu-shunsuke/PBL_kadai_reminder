@@ -3,73 +3,109 @@
  * エントリーポイントとメニュー機能
  */
 
-function onOpen() {
-  // 起動時に設定シートを初期化（存在しない場合のみ）
-  initializeSettingsSheet();
+const SETUP_FUNCTION = 'dailySystemRun';
 
+function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('✨ 課題自動取得システム')
-    .addItem('1. 認証情報を設定', 'showCredentialDialog')
-    .addItem('2. Tasks連携設定', 'setupTasksList')
-    .addItem('3. **定期実行トリガーの自動設定**', 'setupDailyTrigger') // [改善案 4. 自動設定]
+    .addItem('1. WebClass 認証情報を設定 (ID/PW)', 'showAuthDialog')
+    .addItem('2. Tasks・自動実行設定を完了 (初回のみ)', 'showTasksSetupDialog')
     .addSeparator()
-    .addItem('4. 今すぐ実行（テスト）', 'dailySystemRun')
+    .addItem('3. 今すぐ実行（テスト）', SETUP_FUNCTION)
+    .addSeparator()
+    .addItem('4. 設定をすべてリセット', 'resetAllSettings')
     .addToUi();
 }
 
 /**
- * 認証ダイアログ表示 (Setting.html を呼び出す)
+ * 1. 認証情報設定ダイアログ表示
  */
-function showCredentialDialog() {
+function showAuthDialog() {
+  // Settings.htmlを読み込みます
   const html = HtmlService.createHtmlOutputFromFile('Setting')
-    .setWidth(450).setHeight(250);
-  SpreadsheetApp.getUi().showModalDialog(html, 'WebClass認証情報の設定');
+    .setWidth(450).setHeight(320);
+  SpreadsheetApp.getUi().showModalDialog(html, 'WebClass 認証情報の設定');
 }
 
 /**
- * Tasksリストのセットアップ
+ * 2. Tasks・自動実行設定ダイアログ表示
  */
-function setupTasksList() {
+function showTasksSetupDialog() {
+  // Setting_Tasks.htmlを読み込みます
+  const html = HtmlService.createHtmlOutputFromFile('Setting_Tasks')
+    .setWidth(500).setHeight(400);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Tasks・自動実行設定');
+}
+
+/**
+ * Tasks設定保存後に呼ばれる処理（トリガー設定など）
+ * Setting_Tasks.html から呼び出されます
+ */
+function runPostTasksSetup(settings) {
   const ui = SpreadsheetApp.getUi();
   try {
-    const taskListName = getSetting('TASKS_LIST_NAME'); // AppConfig.gs から読み込み
-    const taskListId = getTaskListId(taskListName); // AppLogic.gs のヘルパー関数
+    // 1. Tasksリストの連携・作成はUtils.gsのsaveTasksDataFromHtml内で完了しています
 
-    Props.setTaskListId(taskListId);
-    ui.alert(`✅ 設定完了\nリスト「${taskListName}」と連携しました。`);
+    // 2. トリガー設定
+    setupDailyTrigger(Number(settings.triggerHour));
+
+    ui.alert(`✅ 設定完了\nTasksリスト「${settings.taskListName}」と連携し、毎日${settings.triggerHour}時台の自動実行を設定しました。`);
   } catch (e) {
-    ui.alert(`🚨 エラー: ${e.message}\nTasks APIが有効か、または設定シートのTASKS_LIST_NAMEを確認してください。`);
+    log(`🚨 設定エラー: ${e.message}`);
+    throw e; // HTML側にエラーを返す
   }
 }
 
 /**
- * 4. 定期実行トリガーを自動設定する関数
+ * 定期実行トリガーの設定（最適化済み）
  */
-function setupDailyTrigger() {
-  const ui = SpreadsheetApp.getUi();
-  const functionToRun = 'dailySystemRun';
+function setupDailyTrigger(hour) {
+  const triggers = ScriptApp.getProjectTriggers();
+  let existingTrigger = null;
 
-  try {
-    const triggerHour = getSetting('TRIGGER_HOUR'); // AppConfig.gs から読み込み
-
-    // 既存のトリガーを全て削除（重複防止）
-    const triggers = ScriptApp.getProjectTriggers();
-    for (let i = 0; i < triggers.length; i++) {
-      if (triggers[i].getHandlerFunction() === functionToRun) {
-        ScriptApp.deleteTrigger(triggers[i]);
-      }
+  for (const t of triggers) {
+    if (t.getHandlerFunction() === SETUP_FUNCTION) {
+      existingTrigger = t;
+      break;
     }
+  }
 
-    // 新しい日次トリガーを設定
-    ScriptApp.newTrigger(functionToRun)
-      .timeBased()
-      .everyDays(1)
-      .atHour(triggerHour) // 設定シートの値を使用
-      .create();
+  // 既に同じ時間のトリガーがあれば何もしない
+  const currentHour = Settings.getSetting('triggerHour');
+  if (existingTrigger && currentHour == hour) {
+    log('✅ トリガー設定スキップ: 変更なし');
+    return;
+  }
 
-    ui.alert(`✅ 定期実行トリガーを設定しました。\n毎日午前${triggerHour}時〜${triggerHour + 1}時の間に自動実行されます。`);
-  } catch (e) {
-    ui.alert(`🚨 エラー: トリガー設定に失敗しました。\n設定シートの「TRIGGER_HOUR」が正しく設定されているか確認してください。\nエラー詳細: ${e.message}`);
+  // 古いトリガー削除
+  if (existingTrigger) {
+    ScriptApp.deleteTrigger(existingTrigger);
+  }
+
+  // 新規作成
+  ScriptApp.newTrigger(SETUP_FUNCTION)
+    .timeBased().everyDays(1).atHour(hour).create();
+  log(`✅ 毎日${hour}時のトリガーを設定しました。`);
+}
+
+/**
+ * 4. 設定をすべてリセット (Utils.gsのresetAllを呼び出し)
+ */
+function resetAllSettings() {
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.alert(
+    '🚨 設定リセットの確認',
+    'WebClass認証情報、TasksリストID、自動実行トリガーをすべて削除します。よろしいですか？\n\n（この操作は元に戻せません）',
+    ui.ButtonSet.YES_NO
+  );
+
+  if (response === ui.Button.YES) {
+    try {
+      Settings.resetAll(); // Utils.gsの関数を呼び出し
+      ui.alert('✅ すべての設定とトリガーを削除しました。システムを再利用するには、再度メニュー1, 2を実行してください。');
+    } catch (e) {
+      ui.alert(`🚨 リセットエラー: ${e.message}`);
+    }
   }
 }
 
@@ -84,6 +120,6 @@ function dailySystemRun() {
     processTasksSync();
     log('--- システム実行完了 ---');
   } catch (e) {
-    log(`🚨 致命的エラー中断: ${e.toString()}\n認証情報やTasks連携設定を確認してください。`);
+    log(`🚨 実行中断: ${e.message}`);
   }
 }

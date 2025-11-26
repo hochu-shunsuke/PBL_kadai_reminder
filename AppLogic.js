@@ -1,230 +1,252 @@
 /**
  * AppLogic.gs
- * WebClass, Classroom, Tasksの各処理ロジック (旧 Coge.gs)
+ * 課題データの取得、変換、Tasks連携のロジックを管理するコアファイル。
+ * 依存: 
+ * - Config.gs (定数)
+ * - Utils.gs (Settings, SheetUtils, log, parseAssignmentDate)
+ * - WebClassClient.gs (WebClassClientクラス)
+ * - Parser.gs (WebClassParser)
+ * - Tasks API サービス, Classroom API サービス
  */
 
-// --- 1. WebClass取得 ---
+/**
+ * WebClassから課題を取得し、シートに書き込む
+ */
 function processWebClass() {
-  log('--- WebClass処理開始 ---');
-  const creds = Props.getCredentials();
-  if (!creds) throw new Error('WebClass認証情報が未設定です。');
+  log('--- WebClass課題取得開始 ---');
+  const u = Settings.getSetting('userid');
+  const p = Settings.getSetting('password');
+
+  // 認証情報未設定の場合は中断
+  if (!u || !p) {
+    throw new Error('WebClass認証情報が未設定です。メニューから設定してください。');
+  }
 
   const client = new WebClassClient();
-  const dashboardUrl = client.login(creds.userid, creds.password);
+  let dashUrl;
+  try {
+    dashUrl = client.login(u, p);
+  } catch (e) {
+    log(`🚨 ログイン失敗: ${e.message}`);
+    throw new Error('WebClassへのログインに失敗しました。認証情報を確認してください。');
+  }
 
-  const dashboardHtml = client.fetchWithSession(dashboardUrl);
-  const courses = WebClassParser.parseDashboard(dashboardHtml);
+  // ダッシュボードからコース一覧を取得
+  const dashHtml = client.fetchWithSession(dashUrl);
+  const courses = WebClassParser.parseDashboard(dashHtml);
 
-  const allRows = [];
-  courses.forEach((course, i) => {
-    let courseName = course.name.replace(/^\s*\d+\s*/, '').replace(/\s*\(.*\)\s*$/, '').trim();
-
+  const rows = [];
+  courses.forEach(c => {
+    let cName = c.name.replace(/^\s*\d+\s*/, '').replace(/\s*\(.*\)\s*$/, '').trim();
     try {
-      const html = client.fetchWithSession(course.url);
-      const assignments = WebClassParser.parseCourseContents(html);
+      const html = client.fetchWithSession(c.url);
+      const asses = WebClassParser.parseCourseContents(html);
 
-      assignments.forEach(a => {
-        allRows.push([
-          'WebClass', courseName, a.title, a.start, a.end, a.shareLink, '', ''
-        ]);
+      asses.forEach(a => {
+        // [ソース, 授業名, 課題タイトル, 開始日時, 終了日時, 課題リンク, Tasks ID, 登録済みフラグ]
+        rows.push(['WebClass', cName, a.title, a.start, a.end, a.shareLink, '', '']);
       });
     } catch (e) {
-      log(`🚨 ${courseName} の取得失敗: ${e.message}`);
+      log(`⚠️ ${cName} の課題取得中にエラー: ${e.message}`);
     }
     Utilities.sleep(500);
   });
 
-  SheetUtils.writeToSheet(SHEET_NAME_WEBCLASS, allRows);
-  log('--- WebClass処理完了 ---');
+  SheetUtils.writeToSheet(SHEET_NAME_WEBCLASS, rows);
+  log('--- WebClass課題取得完了 ---');
 }
 
-// --- 2. Classroom取得 ---
+/**
+ * Google Classroomから課題を取得し、シートに書き込む
+ */
 function processClassroom() {
-  log('--- Classroom処理開始 ---');
+  log('--- Classroom課題取得開始 ---');
   try {
     const courses = Classroom.Courses.list({ courseStates: ['ACTIVE'] }).courses;
+    const rows = [];
+    if (courses) {
+      courses.forEach(c => {
+        const works = Classroom.Courses.CourseWork.list(c.id, { courseWorkStates: ['PUBLISHED'] }).courseWork;
+        if (!works) return;
 
-    const allRows = [];
-    courses.forEach(course => {
-      const works = Classroom.Courses.CourseWork.list(course.id, { courseWorkStates: ['PUBLISHED'] }).courseWork;
-      if (!works) return;
+        works.forEach(w => {
+          if (!w.dueDate) return;
 
-      works.forEach(work => {
-        if (!work.dueDate) return;
+          const d = w.dueDate;
+          const t = w.dueTime || { hours: 0, minutes: 0 };
 
-        const d = work.dueDate;
-        const t = work.dueTime || { hours: 0, minutes: 0 };
-        const dateObj = new Date(d.year, d.month - 1, d.day, t.hours || 0, t.minutes || 0);
-        const dueStr = Utilities.formatDate(dateObj, Session.getScriptTimeZone(), 'yyyy/MM/dd HH:mm');
+          const dt = new Date(d.year, d.month - 1, d.day, t.hours || 0, t.minutes || 0);
+          const dueStr = Utilities.formatDate(dt, Session.getScriptTimeZone(), 'yyyy/MM/dd HH:mm');
 
-        allRows.push(['Classroom', course.name, work.title, '', dueStr, work.alternateLink, '', '']);
+          rows.push(['Classroom', c.name, w.title, '', dueStr, w.alternateLink, '', '']);
+        });
       });
-    });
-
-    SheetUtils.writeToSheet(SHEET_NAME_CLASSROOM, allRows);
+    }
+    SheetUtils.writeToSheet(SHEET_NAME_CLASSROOM, rows);
+    log('--- Classroom課題取得完了 ---');
   } catch (e) {
     log(`🚨 Classroom取得エラー: ${e.message}`);
   }
-  log('--- Classroom処理完了 ---');
 }
 
-// --- 3. Tasks同期・登録 ---
+/**
+ * スプレッドシートとTasksの同期処理
+ */
 function processTasksSync() {
-  const taskListId = getTaskListIdProperty();
-  if (!taskListId) {
-    log('TasksリストIDが未設定です。同期をスキップします。');
+  const listId = Settings.getTaskListId();
+  if (!listId) {
+    log('⚠️ TasksリストIDが未設定のため、同期・登録処理をスキップしました。');
     return;
   }
 
+  log('--- Tasks同期処理開始 ---');
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheets = [SHEET_NAME_WEBCLASS, SHEET_NAME_CLASSROOM];
 
-  sheets.forEach(name => {
+  const allRows = [];
+  const sheetDataMap = new Map();
+
+  // 1. WebClassとClassroomの全データを読み込み、統合する
+  [SHEET_NAME_WEBCLASS, SHEET_NAME_CLASSROOM].forEach(name => {
     const sheet = ss.getSheetByName(name);
     if (!sheet || sheet.getLastRow() <= 1) return;
 
     const range = sheet.getRange(2, 1, sheet.getLastRow() - 1, HEADER.length);
     const data = range.getValues();
-    let isUpdated = false;
 
-    data.forEach((row, i) => {
-      const [src, course, title, start, due, link, taskId, flag] = row;
+    sheetDataMap.set(name, { rows: data, range: range, updated: false });
 
-      // A. 完了同期 
-      if (taskId && flag !== 'COMPLETED' && flag !== 'DELETED') {
-        try {
-          const t = Tasks.Tasks.get(taskListId, taskId);
-          if (t.status === 'completed') {
-            data[i][7] = 'COMPLETED';
-            isUpdated = true;
-          }
-        } catch (e) {
-          if (e.message.includes('NotFound')) {
-            data[i][7] = 'DELETED'; // Tasks側で削除された
-            isUpdated = true;
-          }
-        }
-      }
-
-      // B. 新規登録 [改善案 5, 6 の実装]
-      if (!taskId && !['COMPLETED', 'DELETED', 'EXPIRED'].includes(flag)) {
-
-        let dueDateObj = null;
-        const rawDue = String(due).trim();
-
-        if (rawDue) {
-          try {
-            // 様々な日付形式に対応してパースを試みる
-            dueDateObj = new Date(rawDue.replace(/(\d{4})[\/年](\d{1,2})[\/月](\d{1,2})[\日]?/g, '$1/$2/$3'));
-            if (isNaN(dueDateObj.getTime())) dueDateObj = null;
-          } catch (e) { dueDateObj = null; }
-        }
-
-        // ★★★ 期限がない、または解析できなかった場合は登録をスキップ (今回の修正) ★★★
-        if (!dueDateObj) {
-          log(`📝 期限がないため、Tasks登録をスキップ: [${course}] ${title}`);
-          return; // この行の処理を終了し、次の行へ進む
-        }
-        // ★★★ ------------------------------------------------------------- ★★★
-
-        // 期限切れチェック (dueDateObjは確定)
-        if (dueDateObj.getTime() < new Date().getTime()) {
-          data[i][7] = 'EXPIRED';
-          isUpdated = true;
-          return;
-        }
-
-        try {
-          const newTask = {};
-          let dueDisplay = '期限なし';
-
-          // dueDateObj が null でないことは確定済み
-
-          // --- [改善案 5] Tasksタイトル形式の最適化 ---
-          const timeUntilDue = (dueDateObj.getTime() - new Date().getTime()) / (1000 * 3600 * 24);
-          const isUrgent = timeUntilDue <= 3 && timeUntilDue >= 0;
-
-          dueDisplay = Utilities.formatDate(dueDateObj, Session.getScriptTimeZone(), 'MM/dd(E) HH:mm');
-          newTask.title = `${isUrgent ? '🔥 ' : ''}[${course}] ${title} (${dueDisplay}まで)`;
-
-          // --- [改善案 6] 期限設定精度の向上 ---
-          let taskDueDate = new Date(dueDateObj.getTime());
-          // 時刻情報が含まれていないかチェック
-          if (!rawDue.match(/(\d{1,2}:\d{2})/) && !rawDue.match(/(\d{1,2}時\d{2}分)/)) {
-            taskDueDate.setHours(23, 59, 0, 0); // 23:59:00に設定
-          }
-          newTask.due = taskDueDate.toISOString();
-
-          newTask.notes = `リンク:\n${link}\n\n期限: ${dueDisplay}\nソース: ${src}`;
-
-          const created = Tasks.Tasks.insert(newTask, taskListId);
-          data[i][6] = created.id;
-          data[i][7] = 'REGISTERED';
-          isUpdated = true;
-          log(`Tasks登録: ${newTask.title}`);
-        } catch (e) {
-          log(`🚨 Tasks登録失敗: ${title} - ${e.message}`);
-        }
-      }
+    data.forEach((row, originalIndex) => {
+      allRows.push([...row, name, originalIndex]);
     });
+  });
 
-    if (isUpdated) {
-      range.setValues(data);
+  if (allRows.length === 0) {
+    log('同期対象の課題が見つかりませんでした。');
+    _cleanup(ss);
+    return;
+  }
+
+  // 2. 統合した全課題を、締切の遅い順にソートする (Tasksへの登録順を決定)
+  allRows.sort((a, b) => {
+    const dateA = parseAssignmentDate(a[4]);
+    const dateB = parseAssignmentDate(b[4]);
+
+    const timeA = dateA ? dateA.getTime() : Infinity;
+    const timeB = dateB ? dateB.getTime() : Infinity;
+
+    // ★重要修正点: timeB - timeA にすることで、締切が遅い順（降順）になる
+    return timeB - timeA;
+  });
+
+  // 3. 締切の遅い順にTasksへの同期・登録処理を実行
+  allRows.forEach(fullRow => {
+    const [src, course, title, start, due, link, taskId, flag, sheetName, originalIndex] = fullRow;
+
+    const sheetContext = sheetDataMap.get(sheetName);
+    const originalRow = sheetContext.rows[originalIndex];
+
+    // --- 課題の完了状態をTasksからシートへ同期（originalRowを操作） ---
+    if (originalRow[6] && !['COMPLETED', 'DELETED'].includes(originalRow[7])) {
+      try {
+        const taskStatus = Tasks.Tasks.get(listId, originalRow[6]).status;
+        if (taskStatus === 'completed') {
+          originalRow[7] = 'COMPLETED'; sheetContext.updated = true;
+        }
+      } catch (e) {
+        if (e.message.includes('NotFound')) {
+          originalRow[7] = 'DELETED'; sheetContext.updated = true;
+          log(`Tasksから削除された課題を検出: ${title}`);
+        }
+      }
+    }
+
+    // --- 新規課題をTasksに登録（originalRowを操作） ---
+    if (!originalRow[6] && !['COMPLETED', 'DELETED', 'EXPIRED', 'SKIPPED_NODATE'].includes(originalRow[7])) {
+
+      let dueObj = parseAssignmentDate(due);
+
+      if (!dueObj) {
+        originalRow[7] = 'SKIPPED_NODATE'; sheetContext.updated = true;
+        return;
+      }
+
+      // 既に期限が過ぎているかチェック (1日余裕)
+      if (dueObj.getTime() < new Date().getTime() - (24 * 3600 * 1000)) {
+        originalRow[7] = 'EXPIRED'; sheetContext.updated = true;
+        log(`期限切れの課題を検出: ${title}`);
+        return;
+      }
+
+      try {
+        const diff = (dueObj.getTime() - new Date().getTime()) / 86400000;
+        const urgent = diff <= 3;
+        const dueDisp = Utilities.formatDate(dueObj, Session.getScriptTimeZone(), 'MM/dd(E) HH:mm');
+
+        let taskDue = new Date(dueObj);
+
+        const task = {
+          title: `${urgent ? '🔥 ' : ''}[${course}] ${title} (${dueDisp}まで)`,
+          due: taskDue.toISOString(),
+          notes: `リンク:\n${link}\n\n期限: ${dueDisp}\nソース: ${src}`
+        };
+
+        const t = Tasks.Tasks.insert(task, listId);
+
+        originalRow[6] = t.id;
+        originalRow[7] = 'REGISTERED';
+        sheetContext.updated = true;
+        log(`Tasks登録: ${task.title}`);
+      } catch (e) {
+        log(`Tasks登録失敗: ${title} - ${e.message}`);
+      }
     }
   });
 
-  _cleanupOldRows(ss, sheets);
+  // 4. 更新されたデータを元のシートに書き戻す
+  sheetDataMap.forEach((context, name) => {
+    if (context.updated) {
+      SheetUtils.writeToSheet(name, context.rows);
+    }
+  });
+
+  _cleanup(ss);
+  log('--- Tasks同期処理完了 ---');
 }
 
 /**
- * 課題の削除ロジック [改善案 9. 削除閾値の適用]
+ * 期限切れ、完了済み、削除済みタスクをシートから削除（整理）
  */
-function _cleanupOldRows(ss, targetSheetNames) {
-  const today = new Date().getTime();
+function _cleanup(ss) {
+  const days = Number(Settings.getSetting('cleanupDays') || 30);
+  const thresh = days * 86400000;
+  const now = new Date().getTime();
 
-  let cleanupDays = 30;
-  try {
-    cleanupDays = getSetting('CLEANUP_DAYS');
-  } catch (e) {
-    log(`⚠️ 設定シートからCLEANUP_DAYSを取得できませんでした。デフォルトの${cleanupDays}日を使用します。`);
-  }
-  const deleteThresholdMs = cleanupDays * 24 * 60 * 60 * 1000;
+  log(`--- シートクリーンアップ開始 (猶予期間: ${days}日) ---`);
 
-  targetSheetNames.forEach(name => {
+  [SHEET_NAME_WEBCLASS, SHEET_NAME_CLASSROOM].forEach(name => {
     const sheet = ss.getSheetByName(name);
     if (!sheet || sheet.getLastRow() <= 1) return;
 
     const rows = sheet.getDataRange().getValues();
 
-    // 後ろからループして削除
     for (let i = rows.length - 1; i >= 1; i--) {
-      const [src, course, title, start, due, link, taskId, flag] = rows[i];
+      const row = rows[i];
+      const [, , , , due, , taskId, flag] = row;
+
+      let dObj = parseAssignmentDate(due);
 
       let shouldDelete = false;
-      const rawDue = String(due).trim();
 
-      let dueDateObj = null;
-      if (rawDue) {
-        try {
-          dueDateObj = new Date(rawDue.replace(/(\d{4})[\/年](\d{1,2})[\/月](\d{1,2})[\日]?/g, '$1/$2/$3'));
-          if (isNaN(dueDateObj.getTime())) dueDateObj = null;
-        } catch (e) { dueDateObj = null; }
-      }
+      if (['COMPLETED', 'DELETED', 'EXPIRED', 'SKIPPED_NODATE'].includes(flag)) {
 
-      // 1. 完了・削除・期限切れ済みの場合
-      if (['COMPLETED', 'DELETED', 'EXPIRED'].includes(flag)) {
-        // 期限があり、かつ期限切れから閾値日数以上経過
-        if (dueDateObj && (today - dueDateObj.getTime()) > deleteThresholdMs) {
+        if (flag === 'SKIPPED_NODATE' || !dObj) {
           shouldDelete = true;
-        }
-        // 期限はないがTasksから削除されたものは即座に削除（ゴミデータ回避）
-        else if (flag === 'DELETED' && !dueDateObj) {
-          shouldDelete = true;
+        } else {
+          if (now - dObj.getTime() > thresh) shouldDelete = true;
         }
       }
 
-      // 2. 未連携で、期限からCLEANUP_DAYS以上経過（古いゴミデータ）
-      if (!taskId && dueDateObj && (today - dueDateObj.getTime()) > deleteThresholdMs) {
+      if (!taskId && dObj && (now - dObj.getTime()) > thresh) {
         shouldDelete = true;
       }
 
@@ -233,23 +255,5 @@ function _cleanupOldRows(ss, targetSheetNames) {
       }
     }
   });
-}
-
-// TasksリストIDの検索・作成ヘルパー
-function getTaskListId(taskListName) {
-  const lists = Tasks.Tasklists.list().items;
-  let targetId = null;
-
-  for (const list of lists) {
-    if (list.title === taskListName) {
-      targetId = list.id;
-      break;
-    }
-  }
-
-  if (!targetId) {
-    const newList = Tasks.Tasklists.insert({ title: taskListName });
-    targetId = newList.id;
-  }
-  return targetId;
+  log('--- シートクリーンアップ完了 ---');
 }

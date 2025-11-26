@@ -12,7 +12,6 @@ const ACS_URL = WEBCLASS_BASE_URL + '/simplesaml/module.php/saml/sp/saml2-acs.ph
 const SHEET_NAME_WEBCLASS = 'WebClass課題';
 const SHEET_NAME_CLASSROOM = 'Classroom課題';
 const SHEET_NAME_LOG = 'ログ';
-// ヘッダー定義
 const HEADER = ['ソース', '授業名', '課題タイトル', '開始日時', '終了日時', '課題リンク (URL)', 'Tasks ID', '登録済みフラグ'];
 
 // --- システム定数 ---
