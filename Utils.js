@@ -3,9 +3,11 @@
  * システムの共通ヘルパー、設定管理、ログ、シート操作を担う。
  * * 依存: 
  * - Config.gs (定数)
- * - Main.gs (関数: runPostTasksSetup, 定数: SETUP_FUNCTION <--- Main.gsで定義されたものを利用)
+ * - Main.gs (関数: runPostTasksSetup, 定数: SETUP_FUNCTION)
  * - Tasks API サービス
  */
+
+// SETUP_FUNCTION は Main.gs で定義されています。（ここでは再宣言しない）
 
 
 /**
@@ -14,21 +16,30 @@
 function saveAuthDataFromHtml(userid, password) {
   if (!userid || !password) throw new Error('IDとパスワードが必要です。');
   Settings.saveAuth({ userid: String(userid), password: String(password) });
-  return true;
+  return true; 
 }
 
 /**
  * HTMLから呼び出されるTasks設定保存関数
  */
 function saveTasksDataFromHtml(settings) {
+  const oldListId = Settings.getTaskListId(); 
+  
   // 1. Tasksリストの検索・作成（IDの取得と保存）をまず実行
-  const listId = setupTasksList(settings.taskListName);
-  Settings.setTaskListId(listId);
-
-  // 2. その他の設定を保存
+  const listId = setupTasksList(settings.taskListName); 
+  Settings.setTaskListId(listId); 
+  
+  // 2. ★修正ロジック: Tasks IDが変わった場合、シートの全課題データをクリア
+  if (oldListId !== listId) {
+      log('🚨 TasksリストIDが変更されました。新しい環境で再スタートするため、シートの全課題データをクリアし、次回の実行で全て再取得します。');
+      // AppLogic.gs で定義された関数を呼び出す
+      clearAssignmentSheets(); 
+  }
+  
+  // 3. その他の設定を保存
   Settings.saveTasks(settings);
 
-  // 3. トリガー設定（Main.gsの関数呼び出し）
+  // 4. トリガー設定（Main.gsの関数呼び出し）
   runPostTasksSetup(settings);
   return true;
 }
@@ -82,18 +93,18 @@ function parseAssignmentDate(dateStr) {
  * 設定管理オブジェクト
  */
 const Settings = {
-  getSetting: function (key) {
+  getSetting: function(key) {
     return PropertiesService.getUserProperties().getProperty(key);
   },
-
-  saveAuth: function (data) {
+  
+  saveAuth: function(data) {
     PropertiesService.getUserProperties().setProperties({
       'userid': data.userid,
       'password': data.password
     });
   },
 
-  saveTasks: function (data) {
+  saveTasks: function(data) {
     PropertiesService.getUserProperties().setProperties({
       'taskListName': String(data.taskListName),
       'triggerHour': String(data.triggerHour),
@@ -101,25 +112,31 @@ const Settings = {
     });
   },
 
-  getTaskListId: function () {
+  getTaskListId: function() {
     return PropertiesService.getUserProperties().getProperty('taskListId');
   },
 
-  setTaskListId: function (id) {
+  setTaskListId: function(id) {
     PropertiesService.getUserProperties().setProperty('taskListId', id);
   },
-
+  
+  /**
+   * TasksリストIDをPropertiesServiceから明示的に削除する
+   */
+  deleteTaskListId: function() {
+    PropertiesService.getUserProperties().deleteProperty('taskListId');
+  },
+  
   /**
    * すべてのユーザープロパティと日次実行トリガーを削除する
    */
-  resetAll: function () {
+  resetAll: function() {
     PropertiesService.getUserProperties().deleteAllProperties();
-
-    // SETUP_FUNCTION (dailySystemRun) は Main.gs で定義された定数を利用
+    
     const triggers = ScriptApp.getProjectTriggers();
     for (const t of triggers) {
       if (t.getHandlerFunction() === SETUP_FUNCTION) {
-        ScriptApp.deleteTrigger(t);
+          ScriptApp.deleteTrigger(t);
       }
     }
     log('すべての設定と自動実行トリガーを削除しました。');
@@ -135,7 +152,7 @@ const Settings = {
 function setupTasksList(listName) {
   const lists = Tasks.Tasklists.list().items;
   let targetId = null;
-
+  
   // 1. 既存のリストを名前で検索
   if (lists) {
     for (const list of lists) {
@@ -146,7 +163,7 @@ function setupTasksList(listName) {
       }
     }
   }
-
+  
   // 2. 見つからなければ新規作成
   if (!targetId) {
     const newList = Tasks.Tasklists.insert({ title: listName });
@@ -154,7 +171,7 @@ function setupTasksList(listName) {
     log(`Tasksリスト「${listName}」を新規作成しました。`);
   }
 
-  return targetId;
+  return targetId; 
 }
 
 
@@ -162,45 +179,36 @@ function setupTasksList(listName) {
 
 /**
  * シート書き込み共通処理
+ * ★Tasks ID/フラグの復元ロジックを削除し、純粋に新しいデータでシートを上書きする
  */
 const SheetUtils = {
-  writeToSheet: function (sheetName, dataRows) {
+  writeToSheet: function(sheetName, newAssignments) { // newAssignmentsはWebClass/Classroomから取得したデータ
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     let sheet = ss.getSheetByName(sheetName);
-
+    
     if (!sheet) {
-      sheet = ss.insertSheet(sheetName);
-      log(`シート「${sheetName}」を新規作成しました。`);
+        sheet = ss.insertSheet(sheetName);
+        log(`シート「${sheetName}」を新規作成しました。`);
     }
 
-    // --- 日付ソート処理 ---
-    if (dataRows.length > 0) {
-      dataRows.sort((a, b) => {
-        const dateA = parseAssignmentDate(a[4]);
-        const dateB = parseAssignmentDate(b[4]);
-
-        const timeA = dateA ? dateA.getTime() : Infinity;
-        const timeB = dateB ? dateB.getTime() : Infinity;
-
-        return timeA - timeB;
-      });
-    }
-    // ----------------------
-
+    // --- 既存の Tasks ID/Flag マージロジックを削除 ---
+    
+    // 1. シートをクリア
     const lastRow = sheet.getLastRow();
     if (lastRow > 1) {
       const lastColumn = sheet.getLastColumn();
       if (lastColumn > 0) {
-        sheet.getRange(2, 1, lastRow - 1, lastColumn).clearContent();
+          sheet.getRange(2, 1, lastRow - 1, lastColumn).clearContent();
       }
     }
 
+    // 2. ヘッダーとデータを書き込み
     sheet.getRange(1, 1, 1, HEADER.length).setValues([HEADER]).setFontWeight('bold');
-
-    if (dataRows.length > 0) {
-      sheet.getRange(2, 1, dataRows.length, dataRows[0].length).setValues(dataRows);
+    
+    if (newAssignments.length > 0) {
+      sheet.getRange(2, 1, newAssignments.length, newAssignments[0].length).setValues(newAssignments);
     }
     SpreadsheetApp.flush();
-    log(`✅ ${dataRows.length}件を「${sheetName}」へ書き込み完了`);
+    log(`✅ ${newAssignments.length}件を「${sheetName}」へ書き込み完了 (Tasksフラグは空で上書き)`);
   }
 };
