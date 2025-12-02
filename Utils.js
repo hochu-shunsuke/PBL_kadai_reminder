@@ -29,7 +29,7 @@ function saveTasksDataFromHtml(settings) {
   const listId = setupTasksList(settings.taskListName); 
   Settings.setTaskListId(listId); 
   
-  // 2. ★修正ロジック: Tasks IDが変わった場合、シートの全課題データをクリア
+  // 2. Tasks IDが変わった場合、シートの全課題データをクリア
   if (oldListId !== listId) {
       log('🚨 TasksリストIDが変更されました。新しい環境で再スタートするため、シートの全課題データをクリアし、次回の実行で全て再取得します。');
       // AppLogic.gs で定義された関数を呼び出す
@@ -179,7 +179,7 @@ function setupTasksList(listName) {
 
 /**
  * シート書き込み共通処理
- * ★Tasks ID/フラグの復元ロジックを削除し、純粋に新しいデータでシートを上書きする
+ * ★修正: 既存データのTasks ID/Flagを保持したまま更新するように変更
  */
 const SheetUtils = {
   writeToSheet: function(sheetName, newAssignments) { // newAssignmentsはWebClass/Classroomから取得したデータ
@@ -191,10 +191,38 @@ const SheetUtils = {
         log(`シート「${sheetName}」を新規作成しました。`);
     }
 
-    // --- 既存の Tasks ID/Flag マージロジックを削除 ---
-    
-    // 1. シートをクリア
+    // --- 既存のTasks IDとFlagを退避する処理を追加 ---
+    const idMap = new Map();
     const lastRow = sheet.getLastRow();
+    
+    // データが既にある場合、Tasks ID等を退避
+    if (lastRow > 1) {
+      // 全データを取得 (Linkは5列目, TasksIDは6列目, Flagは7列目 ※0始まり)
+      const currentData = sheet.getRange(2, 1, lastRow - 1, HEADER.length).getValues();
+      
+      currentData.forEach(row => {
+        const link = row[5]; // 一意のキーとして課題リンクを使用
+        const taskId = row[6];
+        const flag = row[7];
+        
+        // Tasks IDまたはフラグがある場合のみ記録
+        if (link && (taskId || flag)) {
+          idMap.set(link, { id: taskId, flag: flag });
+        }
+      });
+    }
+
+    // --- 新しいデータに既存情報をマージ ---
+    newAssignments.forEach(row => {
+      const link = row[5];
+      if (idMap.has(link)) {
+        const saved = idMap.get(link);
+        row[6] = saved.id;   // Tasks IDを復元
+        row[7] = saved.flag; // 登録済みフラグを復元
+      }
+    });
+
+    // 1. シートをクリア (情報はマージ済みなので安全)
     if (lastRow > 1) {
       const lastColumn = sheet.getLastColumn();
       if (lastColumn > 0) {
@@ -209,6 +237,6 @@ const SheetUtils = {
       sheet.getRange(2, 1, newAssignments.length, newAssignments[0].length).setValues(newAssignments);
     }
     SpreadsheetApp.flush();
-    log(`✅ ${newAssignments.length}件を「${sheetName}」へ書き込み完了 (Tasksフラグは空で上書き)`);
+    log(`✅ ${newAssignments.length}件を「${sheetName}」へ更新完了 (重複防止処理済み)`);
   }
 };
